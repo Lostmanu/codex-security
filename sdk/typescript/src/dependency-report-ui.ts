@@ -397,6 +397,52 @@ strong {
   color: var(--accent);
   font-size: 0.8125rem;
 }
+.stack-overview {
+  padding: 0.75rem 1rem;
+  margin: 0 0 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+}
+.stack-overview h2 {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+}
+.stack-overview p {
+  margin: 0.375rem 0;
+  overflow-wrap: anywhere;
+}
+.stack-overview summary {
+  font-weight: 600;
+}
+.stack-caller,
+.stack-coverage {
+  margin: 0.5rem 0;
+}
+.stack-verdicts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 1rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.stack-coverage-scroll {
+  overflow: auto;
+  max-block-size: 22rem;
+}
+.stack-coverage table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+.stack-coverage th,
+.stack-coverage td {
+  text-align: start;
+  vertical-align: top;
+  border-bottom: 1px solid var(--line);
+  padding: 0.375rem 0.5rem;
+  overflow-wrap: anywhere;
+}
 .finding {
   padding-block: 1.1rem 0;
 }

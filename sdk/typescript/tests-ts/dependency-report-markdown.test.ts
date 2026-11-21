@@ -133,6 +133,36 @@ test("Markdown puts the bound code at its sampled frame and shows locations even
   expect(review).toContain("return decode(bytes);");
 });
 
+test("stack Markdown shows capture boundary omissions and flags an inferred handoff", () => {
+  const raw = stackReport();
+  const [assessment] = raw.assessments;
+  const { observation } = assessment;
+  const output = renderDependencyReportMarkdown({
+    ...raw,
+    assessments: [
+      {
+        ...assessment,
+        queryProvenance: { source: "inferred_creator_code" },
+        observation: {
+          ...observation,
+          capturedFrameCount: 6,
+          sinkIndex: 2,
+          sinkMatches: [{ sinkId: "codec", rawIndex: 2 }],
+          frames: [
+            { ...observation.frames[0], rawIndex: 2 },
+            observation.frames[1],
+          ],
+        },
+      },
+    ],
+  });
+  expect(output).toContain("Inferred async creator stack");
+  expect(output).toContain("The async handoff remains inferred.");
+  expect(output).toContain("Showing 2 of 6 captured frames.");
+  expect(output).toContain("1 captured frame omitted above");
+  expect(output).toContain("2 captured frames omitted below");
+});
+
 test("zero reviewed uses still retains unresolved handoffs", () => {
   const input = zeroReport();
   const output = renderDependencyReportMarkdown(input);

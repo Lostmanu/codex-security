@@ -25,7 +25,7 @@ export const reportInteractions = String.raw`
     const next = first('[data-next]');
     const position = first('[data-position]');
     const jump = first('[data-jump]');
-    const sink = first('[data-role="sink"]') || first('[data-role="query_sink"]') || first('[data-role="call_site"]');
+    const sink = first('[data-assessed-sink]') || first('[data-role="call_site"]');
     const matched = frames.filter(frame => frame.dataset.inRange !== 'false');
     const initial = matched.find(frame => frame.open) || matched[0] || frames[0];
     let full = !range || !matched.length;
@@ -35,6 +35,7 @@ export const reportInteractions = String.raw`
     const visible = () => full ? frames : matched;
     const adjacent = offset => visible()[visible().indexOf(active) + offset];
     const header = frame => frame.querySelector('summary');
+    const frameId = frame => frame.dataset.frameAnchor || frame.id;
 
     function select(frame, open = true) {
       active = frame;
@@ -52,7 +53,7 @@ export const reportInteractions = String.raw`
         expand.setAttribute('aria-pressed', String(expanded));
       }
       if (range) {
-        range.textContent = full ? 'Show matched path' : 'Show full stack';
+        range.textContent = full ? 'Show matched path' : 'Show all saved frames';
         range.setAttribute('aria-pressed', String(full));
       }
       const at = visible().indexOf(active);
@@ -60,12 +61,12 @@ export const reportInteractions = String.raw`
       const last = at === visible().length - 1;
       if (next) next.disabled = last;
       for (const button of follows) button.hidden = visible().at(-1)?.contains(button) || false;
-      if (position) position.textContent = (at + 1) + ' / ' + visible().length;
+      if (position) position.textContent = 'Step ' + (at + 1) + ' of ' + visible().length;
     }
     function visit(frame, keyboard = false) {
       if (!frame) return;
       select(frame);
-      setHash(frame.id, keyboard);
+      setHash(frameId(frame), keyboard);
       if (keyboard) header(frame).focus({ preventScroll: true });
       scroll(header(frame));
     }
@@ -78,7 +79,7 @@ export const reportInteractions = String.raw`
       full = !full;
       if (!full && !matched.includes(active)) {
         select(initial);
-        setHash(active.id, true);
+        setHash(frameId(active), true);
       } else select(active, active.open);
     });
     for (const button of follows) button.addEventListener('click', () => {
@@ -95,7 +96,7 @@ export const reportInteractions = String.raw`
       e.preventDefault();
       if (frame.open) {
         select(frame, false);
-        setHash(frame.id);
+        setHash(frameId(frame));
       } else visit(frame);
     });
     inspector.addEventListener('keydown', e => {

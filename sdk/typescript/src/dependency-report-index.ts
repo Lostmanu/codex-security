@@ -3,6 +3,7 @@ import {
   sectionAdvisories,
   servicesFor,
   inputFor,
+  isCoverageGap,
   verdictOrder,
   type Advisory,
   type DependencyVerdict,
@@ -79,12 +80,19 @@ function label(f: Finding, path: PathInspector): string {
   if (f.kind === "stack") {
     if (f.assessment.status === "no_match") return "No matching stack";
     if (f.assessment.status === "no_coverage") return "No sampling coverage";
-    return (
-      path.frames.find((frame) => frame.role === "call_site")?.label ??
-      f.proof?.sink?.function ??
-      path.frames.find((frame) => frame.role === "sink")?.label ??
-      "Sampled call"
-    );
+    const site = path.frames.find((frame) => frame.isCallSite);
+    const caller =
+      site ??
+      path.frames.find(
+        (frame) =>
+          frame.inRange && (frame.role === "source" || frame.role === "call"),
+      );
+    const sink =
+      path.frames.find((frame) => frame.isAssessedSink)?.label ??
+      f.proof?.sink?.function;
+    if (caller && sink && caller.label !== sink)
+      return caller.label + " → " + sink;
+    return caller?.label ?? sink ?? "Sampled call";
   }
   if (f.kind === "coverage") return f.item.location ?? "Unresolved candidate";
   return f.item.location || f.proof?.sink?.function || f.item.component;
@@ -134,7 +142,11 @@ export function entries(section: Section, index: number): Entry[] {
   return [...siteGroups(items)].flat();
 }
 const siteGroups = (items: Entry[]) =>
-  Map.groupBy(items, (entry) => entry.location ?? entry).values();
+  Map.groupBy(items, (entry) =>
+    entry.finding && !isCoverageGap(entry.finding)
+      ? (entry.location ?? entry)
+      : entry,
+  ).values();
 
 function searchTerms(entry: Entry, section: Section) {
   const f = entry.finding;
@@ -142,6 +154,7 @@ function searchTerms(entry: Entry, section: Section) {
     section.title,
     entry.location,
     entry.scope,
+    f?.kind === "stack" ? f.assessment.scope.image_tag : undefined,
     f?.item.location,
     ...(entry.path?.frames.map((frame) => frame.label) ?? []),
     f && inputFor(f.item)?.endpoint,
@@ -150,7 +163,7 @@ function searchTerms(entry: Entry, section: Section) {
     .filter(Boolean)
     .join(" ");
 }
-function queueGroup({ section, entries: items }: Group, multi: boolean) {
+function queueGroup({ section, entries: items }: Group, title?: string) {
   const rows = [...siteGroups(items)]
     .map((variants) => {
       const nested = variants.length > 1;
@@ -178,10 +191,13 @@ function queueGroup({ section, entries: items }: Group, multi: boolean) {
         .join("");
       if (!nested) return links;
       const first = variants[0]!;
-      return `<div class="site-group"><div class="site-group-title queue-file">${esc(first.file)}</div>${links}</div>`;
+      const breakdown = [...Map.groupBy(variants, (v) => v.state)].map(
+        ([state, rows]) => rows.length + " " + labels[state].toLowerCase(),
+      );
+      return `<div class="site-group"><div class="site-group-title"><div class="queue-file">${esc(first.file)}</div><div class="queue-context">${esc(breakdown.join(" · "))}</div></div>${links}</div>`;
     })
     .join("");
-  return `<div class="queue-group">${multi ? `<h3 class="queue-title">${esc(section.title)}</h3>` : ""}${rows}</div>`;
+  return `<div class="queue-group">${title ? `<h3 class="queue-title">${esc(title)}</h3>` : ""}${rows}</div>`;
 }
 export function rail(groups: Group[]): string {
   const items = groups.flatMap((group) => group.entries);
@@ -191,17 +207,43 @@ export function rail(groups: Group[]): string {
   const buttons = [...verdictOrder, ...otherStates]
     .map((s) => `<option value="${s}">${labels[s]}</option>`)
     .join("");
-  const heading =
-    items.length && items.every((e) => !e.finding)
-      ? "Assessments"
-      : "Call sites";
-  const nav = groups
-    .map((group) => queueGroup(group, groups.length > 1))
-    .join("");
+  const multi = groups.length > 1;
+  const candidates = [];
+  const coverage = [];
+  for (const { section, entries } of groups) {
+    const findings = entries.filter(
+      (e) => e.finding && !isCoverageGap(e.finding),
+    );
+    const gaps = entries.filter((e) => e.finding && isCoverageGap(e.finding));
+    const placeholders = entries.filter((e) => !e.finding);
+    if (findings.length)
+      candidates.push(
+        queueGroup(
+          { section, entries: findings },
+          multi ? section.title : undefined,
+        ),
+      );
+    if (gaps.length)
+      coverage.push(
+        queueGroup(
+          { section, entries: gaps },
+          multi ? section.title + " · Coverage gaps" : "Coverage gaps",
+        ),
+      );
+    if (placeholders.length)
+      coverage.push(
+        queueGroup(
+          { section, entries: placeholders },
+          multi ? section.title : undefined,
+        ),
+      );
+  }
+  const heading = coverage.length ? "Assessments" : "Call sites";
+  const nav = [...candidates, ...coverage].join("");
   const tools =
     items.length > 1
       ? `<div class="rail-tools" data-js hidden>
-      <input aria-label="Search report" type="search" data-search placeholder="Search files or functions" autocomplete="off">
+      <input aria-label="Search report" type="search" data-search placeholder="Search sites, workloads, or clusters" autocomplete="off">
       <select aria-label="Filter by verdict" data-verdict-filter><option value="">All verdicts</option>${buttons}</select>
     </div>`
       : "";

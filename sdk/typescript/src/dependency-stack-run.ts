@@ -575,18 +575,34 @@ async function verifyFinal(
       );
     const existing = store.get("report", "final");
     if (existing !== undefined) {
+      const persisted = stackInvestigationReportSchema.parse(existing);
+      const assessments = report.assessments.map((assessment, index) => {
+        const prior = persisted.assessments[index];
+        const comparable = { ...assessment };
+        // Reports sealed before these fields were introduced keep their identity.
+        if (prior?.queryProvenance === undefined)
+          delete comparable.queryProvenance;
+        if (
+          comparable.observation &&
+          prior?.observation?.capturedFrameCount === undefined
+        ) {
+          comparable.observation = { ...comparable.observation };
+          delete comparable.observation.capturedFrameCount;
+        }
+        return comparable;
+      });
       if (
-        dependencyClaimHash(stackInvestigationReportSchema.parse(existing)) !==
-        digest
+        dependencyClaimHash(persisted) !==
+        dependencyClaimHash({ ...report, assessments })
       )
         throw new CodexSecurityError(
           "The saved report differs from the verified assessments and evidence.",
         );
-    } else {
-      if (requireSaved)
-        throw new CodexSecurityError("The finalized report was removed.");
-      store.set("report", "final", report);
+      return persisted;
     }
+    if (requireSaved)
+      throw new CodexSecurityError("The finalized report was removed.");
+    store.set("report", "final", report);
     return report;
   });
 }

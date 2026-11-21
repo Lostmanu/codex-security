@@ -29,12 +29,18 @@ export type PathFrame = {
   detail?: string;
   omittedBefore: number;
   inRange: boolean;
+  isAssessedSink?: boolean;
+  isQuerySink?: boolean;
+  isCallSite?: boolean;
 };
 export type PathInspector = {
   basis: "sampled" | "source";
   frames: PathFrame[];
   notes: string[];
   initialIndex: number;
+  omittedAtRoot?: number;
+  omittedAtLeaf?: number;
+  inferredAsync?: boolean;
 };
 
 // Some producers embed the line in location instead of supplying frame.line.
@@ -136,34 +142,57 @@ function sampledPath(
   const o = a.observation!;
   const source = o.sourceIndex;
   const matches = new Set(o.sinkMatches.map((m) => m.rawIndex));
-  const sinks = o.sinkIndex === null ? [...matches] : [...matches, o.sinkIndex];
-  const first = sinks.length ? Math.min(...sinks) : null;
+  const candidates = [...matches].filter((i) => source === null || i <= source);
+  const querySink = o.sinkIndex;
+  const sink =
+    querySink !== null && matches.has(querySink)
+      ? querySink
+      : candidates.length === 1
+        ? candidates[0]!
+        : querySink;
   const inside = (i: number) =>
     source === null ||
-    first === null ||
-    source < first ||
-    (i >= first && i <= source);
+    sink === null ||
+    source < sink ||
+    (i >= sink && i <= source);
   const site = finding.proof?.sink?.callSite;
+  const reviewed = site && matchTraceFrame(finding, "sink", site);
+  const citation = reviewed && "cite" in reviewed ? reviewed.cite : undefined;
   const byPath = Map.groupBy(
     a.claims.flatMap((c) => c.sources),
     (c) => c.path,
   );
-  const frames = stackFrames(o).map(
-    ({ frame, rawIndex, omittedBefore }): PathFrame => {
-      const { path, line } = locationOf(frame.location, frame.line);
+  const saved = stackFrames(o).map((record) => ({
+    ...record,
+    ...locationOf(record.frame.location, record.frame.line),
+  }));
+  const callSites = new Set(
+    site && citation
+      ? saved
+          .filter(
+            ({ path, line }) =>
+              path && repoPath(path) === site.path && line === site.line,
+          )
+          .map(({ rawIndex }) => rawIndex)
+      : [],
+  );
+  const frames = saved.map(
+    ({ frame, rawIndex, omittedBefore, path, line }): PathFrame => {
       const mapped = sampledCode(finding, target, byPath, rawIndex, path, line);
-      const callSite =
-        site &&
-        mapped.code &&
-        site.path === mapped.code.path &&
-        line === site.line;
+      const inRange = inside(rawIndex);
+      const isCallSite =
+        inRange &&
+        callSites.size === 1 &&
+        callSites.has(rawIndex) &&
+        mapped.code !== undefined &&
+        mapped.code.commit === citation?.commit;
       const role = matches.has(rawIndex)
         ? "sink"
         : rawIndex === o.sinkIndex
           ? "query_sink"
           : rawIndex === source
             ? "source"
-            : callSite
+            : isCallSite
               ? "call_site"
               : "call";
       const detail =
@@ -179,7 +208,10 @@ function sampledPath(
         detail,
         ...mapped,
         omittedBefore,
-        inRange: inside(rawIndex),
+        inRange,
+        isAssessedSink: rawIndex === sink,
+        isQuerySink: rawIndex === o.sinkIndex,
+        isCallSite,
       };
     },
   );
@@ -195,12 +227,21 @@ function sampledPath(
       notes.push(`Matched sink ${sinkId} frame #${rawIndex} absent.`);
   if (o.framesTruncated === true) notes.push("Frames truncated.");
   if (o.framesTruncated === null) notes.push("Frame truncation unknown.");
-  if (!frames.length) notes.push("No saved frames.");
+  if (!frames.length) {
+    notes.push("No saved frames.");
+    if (o.capturedFrameCount)
+      notes.push(
+        `${o.capturedFrameCount} captured frames omitted from this report.`,
+      );
+  }
+  if (callSites.size > 1)
+    notes.push("Multiple saved frames match the cited call site.");
   // Show the reviewed caller if possible; otherwise begin with the first retained
   // frame with code inside the path. Jump to source/sink using the original indices.
   const selected =
-    frames.find((f) => f.inRange && f.role === "call_site") ??
-    frames.find((f) => f.inRange && f.code) ??
+    frames.find((f) => f.isCallSite) ??
+    frames.find((f) => f.inRange && f.code && !callSites.has(f.rawIndex!)) ??
+    frames.find((f) => f.isAssessedSink) ??
     frames.find((f) => f.inRange) ??
     frames[0];
   return {
@@ -208,6 +249,14 @@ function sampledPath(
     frames,
     notes,
     initialIndex: selected ? frames.indexOf(selected) : -1,
+    omittedAtRoot:
+      o.capturedFrameCount !== undefined && saved.length
+        ? o.capturedFrameCount - saved[0]!.rawIndex - 1
+        : undefined,
+    omittedAtLeaf: saved.at(-1)?.rawIndex,
+    inferredAsync:
+      a.queryProvenance?.source === "inferred_creator_code" ||
+      a.queryProvenance?.source === "inferred_async_creator_link",
   };
 }
 function sourcePath(finding: Finding): PathInspector {

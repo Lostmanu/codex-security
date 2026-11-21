@@ -211,7 +211,7 @@ export function renderDependencyCode(
   const rows = lines
     .map((line, index) => {
       const number = firstLine + index;
-      return `<span class="code-row" data-line="${number}"${highlightedLines?.has(number) ? " data-highlighted" : relatedLines?.has(number) ? ' data-related title="Another step in this path"' : ""}><span class="code-number" aria-hidden="true">${number}</span><span class="code-text">${line}</span>${follow && highlightedLines?.has(number) ? '<button type="button" data-follow data-js hidden aria-label="Next recorded frame" title="Next recorded frame">→</button>' : ""}</span>`;
+      return `<span class="code-row" data-line="${number}"${highlightedLines?.has(number) ? " data-highlighted" : relatedLines?.has(number) ? ' data-related title="Another step in this path"' : ""}><span class="code-number" aria-hidden="true">${number}</span><span class="code-text">${line}</span>${follow && highlightedLines?.has(number) ? '<button type="button" data-follow data-js hidden aria-label="Next shown frame" title="Next shown frame">→</button>' : ""}</span>`;
     })
     .join("");
   return `<pre class="code-listing"><code>${rows}</code></pre>`;

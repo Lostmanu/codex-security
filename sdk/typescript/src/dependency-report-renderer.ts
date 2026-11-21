@@ -27,6 +27,7 @@ import {
 import { renderDependencyCode } from "./dependency-report-code.js";
 import { reportStyles } from "./dependency-report-ui.js";
 import { reportInteractions } from "./dependency-report-interactions.js";
+import { stackOverview } from "./dependency-report-summary.js";
 
 const roles = {
   source: "Source",
@@ -117,38 +118,57 @@ function frameRow(
   const before = omitted
     ? `<p class="gap" data-in-range="${frame.inRange && path.frames[index - 1]?.inRange === true}">${omitted} ${omitted === 1 ? "frame" : "frames"} omitted from this report</p>`
     : "";
-  return `${before}<details class="frame" id="${id}-frame-${index}" data-frame="${index}" data-role="${frame.role}" ${attrs}${index === path.initialIndex ? " open" : ""}>
-   <summary><span class="frame-role">${roles[frame.role]}</span><span class="frame-name">${esc(frame.label)}</span><span class="frame-location" title="${esc(pathName || "")}">${esc(join([location, frame.rawIndex !== undefined && "Frame " + frame.rawIndex]))}</span></summary>
+  const anchor =
+    frame.rawIndex === undefined
+      ? undefined
+      : `${id}-raw-frame-${frame.rawIndex}`;
+  const label =
+    frame.role === "sink" && !frame.isAssessedSink
+      ? "Sink candidate"
+      : path.inferredAsync && frame.role === "call"
+        ? "Frame"
+        : roles[frame.role];
+  return `${before}<details class="frame" id="${id}-frame-${index}" data-frame="${index}" data-role="${frame.role}" ${attrs}${anchor ? ` data-frame-anchor="${anchor}"` : ""}${frame.isAssessedSink ? " data-assessed-sink" : ""}${frame.isQuerySink ? " data-query-sink" : ""}${index === path.initialIndex ? " open" : ""}>
+   <summary><span class="frame-role">${esc(join([label, frame.isCallSite && frame.role !== "call_site" && roles.call_site]))}</span><span class="frame-name"${anchor ? ` id="${anchor}"` : ""}>${esc(frame.label)}</span><span class="frame-location" title="${esc(pathName || "")}">${esc(join([location, frame.rawIndex !== undefined && "Frame " + frame.rawIndex]))}</span></summary>
    <div class="frame-body">${frameContents(frame, id, path, index)}</div></details>`;
 }
 function inspector(path: PathInspector, id: string) {
-  if (!path.frames.length) return "";
+  if (!path.frames.length && !path.notes.length) return "";
   const frames = path.frames.filter((f) => f.role !== "gap");
-  const description =
-    path.basis === "sampled" ? "Observed stack" : "Source review";
-  const heading =
-    frames.length === 1 && frames[0]?.role === "call_site"
+  const description = path.inferredAsync
+    ? "Inferred asynchronous link"
+    : path.basis === "sampled"
+      ? "Observed stack"
+      : "Source review";
+  const heading = path.inferredAsync
+    ? "Saved frames"
+    : frames.length === 1 && frames[0]?.role === "call_site"
       ? "Call site"
       : "Call path";
   const hasRange = frames.some((f) => !f.inRange);
   const destination =
-    frames.find((f) => f.role === "sink") ||
-    frames.find((f) => f.role === "query_sink") ||
-    frames.find((f) => f.role === "call_site");
+    frames.find((f) => f.isAssessedSink) ||
+    (path.basis === "source"
+      ? frames.find((f) => f.role === "call_site")
+      : undefined);
   const tools =
     frames.length > 1
       ? `<div class="inspector-tools" data-js hidden>
-   ${hasRange ? '<button type="button" data-range aria-pressed="false">Show full stack</button>' : ""}
+   ${hasRange ? '<button type="button" data-range aria-pressed="false">Show all saved frames</button>' : ""}
    ${destination ? '<button type="button" data-jump>Jump to ' + roles[destination.role].toLowerCase() + "</button>" : ""}
-   <button type="button" data-prev aria-label="Previous frame" title="Previous frame">←</button>
+   <button type="button" data-prev aria-label="Previous shown frame" title="Previous shown frame">←</button>
    <span data-position aria-live="polite"></span>
-   <button type="button" data-next aria-label="Next frame" title="Next frame">→</button>
+   <button type="button" data-next aria-label="Next shown frame" title="Next shown frame">→</button>
    <button type="button" data-expand aria-pressed="false">Expand all</button>
    <button type="button" data-focus aria-pressed="false">Focus</button></div>`
       : "";
+  const boundaryGap = (count: number | undefined, end: "before" | "after") =>
+    count
+      ? `<p class="gap" data-boundary-gap="${end}">${count} ${count === 1 ? "captured frame" : "captured frames"} omitted ${end} the saved frames</p>`
+      : "";
   return `<section class="inspector" data-inspector aria-label="${description}">
    <div class="inspector-head"><div><p class="eyebrow">${description}</p><h3>${heading}</h3></div>${tools}</div>
-   <div class="path-list">${path.frames.map((f, i) => frameRow(f, i, id, path)).join("")}</div>
+   <div class="path-list">${boundaryGap(path.omittedAtRoot, "before")}${path.frames.map((f, i) => frameRow(f, i, id, path)).join("")}${boundaryGap(path.omittedAtLeaf, "after")}</div>
    ${path.notes.length ? `<p class="inspector-notes">${esc(path.notes.join(" "))}</p>` : ""}</section>`;
 }
 function conditions(f: Finding) {
@@ -194,15 +214,7 @@ function citedCaller(f: Finding, path: PathInspector) {
   const match = matchTraceFrame(f, "sink", site);
   if ("gap" in match) return "";
   const { cite } = match;
-  if (
-    path.frames.some(
-      (frame) =>
-        frame.code?.path === site.path &&
-        frame.code.commit === cite.commit &&
-        frame.line === site.line,
-    )
-  )
-    return "";
+  if (path.frames.some((frame) => frame.isCallSite)) return "";
   const excerpt = f.excerpts[citationKey(cite)];
   if (!excerpt) return "";
   return `<section class="inspector"><div class="inspector-head"><div><p class="eyebrow">Repository evidence</p><h3>Cited call site</h3></div></div>
@@ -232,10 +244,14 @@ function content(section: Section, e: Entry) {
   const path = e.path!;
   const source = path.frames.find((fr) => fr.role === "source");
   const sink =
-    path.frames.find((fr) => fr.role === "sink") ||
-    path.frames.find((fr) => fr.role === "call_site");
+    path.frames.find((fr) => fr.isAssessedSink) ||
+    (path.basis === "source"
+      ? path.frames.find((fr) => fr.role === "call_site")
+      : undefined);
   const title =
-    source && sink ? source.label + " → " + sink.label : e.name || e.file;
+    source && sink && !path.inferredAsync
+      ? source.label + " → " + sink.label
+      : e.name || e.file;
   const component =
     f.kind !== "coverage" && f.item.component
       ? f.item.component + (f.item.version ? " " + f.item.version : "")
@@ -269,6 +285,7 @@ export function renderPreparedDependencyReport(report: Report): string {
         i,
       ) => `<section class="advisory" data-section id="check-${i + 1}">
   ${advisoryHeader(report, section)}
+  ${stackOverview(section)}
   ${entries.map((e) => `<article class="finding" data-finding id="${e.id}" data-verdict="${e.state}">${content(section, e)}</article>`).join("")}
   ${sectionAudit(section)}</section>`,
     )
@@ -282,7 +299,7 @@ export function renderPreparedDependencyReport(report: Report): string {
 <title>${esc(report.title)} · Exploitability report</title><style>${reportStyles}</style></head>
 <body><header class="masthead"><span class="brand">Codex Security</span><span class="product">Exploitability report</span>${checkout(report.target)}</header>
 <div class="workspace">${rail(groups)}
-  <main class="reader"><p data-no-results hidden>No findings match these filters.</p>${pages || empty}${report.contextHint ? `<p>${esc(report.contextHint)}</p>` : ""}</main>
+  <main class="reader"><p data-no-results hidden>No findings match these filters.</p>${pages || empty}${report.contextHint && report.sections.some((section) => !section.stack) ? `<p>${esc(report.contextHint)}</p>` : ""}</main>
 </div><script>${reportInteractions}</script></body></html>\n`;
 }
 export function renderDependencyReport(value: unknown) {

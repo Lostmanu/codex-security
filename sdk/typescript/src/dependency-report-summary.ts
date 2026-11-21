@@ -3,7 +3,9 @@ import {
   verdictOrder,
   type Finding,
   type Report,
+  type Section,
 } from "./dependency-report-model.js";
+import { escapeHtml as esc, prose } from "./dependency-report-audit.js";
 import { dependencyVerdictLabels } from "./dependency-verdict-labels.js";
 import { formatSecurityPolicyText } from "./security-policy.js";
 
@@ -31,6 +33,98 @@ function scope(finding: Finding): string {
   ]
     .filter(Boolean)
     .join(" · ");
+}
+
+type StackFinding = Extract<Finding, { kind: "stack" }>;
+
+function samplingScope(finding: StackFinding) {
+  const s = finding.assessment.scope;
+  return [s.environment, s.cluster, s.service, s.container, s.image_tag]
+    .filter((value, index, fields) => value && fields.indexOf(value) === index)
+    .join(" · ");
+}
+
+function samplingWindow(finding: StackFinding) {
+  const { start, end } = finding.assessment.scope.window;
+  return start + " to " + end;
+}
+
+function samplingRows(findings: StackFinding[]) {
+  const groups = Map.groupBy(findings, (f) => {
+    const a = f.assessment;
+    return JSON.stringify([
+      a.queryId,
+      a.groupId,
+      samplingScope(f),
+      a.scope.window,
+    ]);
+  });
+  return [...groups.values()]
+    .map((findings) => {
+      const f = findings[0]!;
+      const { assessment: a } = f;
+      const observed = findings.filter((f) => f.assessment.observation).length;
+      const status = [
+        observed
+          ? "Samples observed"
+          : a.status === "no_match"
+            ? "No matching sample"
+            : "No sampling coverage",
+        a.truncated === true ? "Incomplete capture" : undefined,
+        a.truncated === null ? "Completeness unknown" : undefined,
+        a.scopeConflicts.length ? "Scope conflict" : undefined,
+      ].filter(Boolean);
+      return `<tr><th scope="row">${esc(samplingScope(f) || "Scope unavailable")}</th><td>${esc(samplingWindow(f))}</td><td>${esc(status.join(" · "))}</td><td>${observed}</td><td><a href="#${f.id}">${esc(a.queryId)}</a></td></tr>`;
+    })
+    .join("");
+}
+
+export function stackOverview(section: Section): string {
+  const { stack, prepared } = section;
+  if (!stack || !prepared) return "";
+  const findings = prepared.findings.filter((f) => f.kind === "stack");
+  const sampled = findings.filter((f) => f.assessment.observation);
+  const windows = new Set(findings.map(samplingWindow));
+  const verdicts = verdictOrder
+    .map((verdict) => {
+      const matching = sampled.filter((f) => f.item.verdict === verdict);
+      return matching.length
+        ? `<li><a href="#${matching[0]!.id}" data-verdict="${verdict}">${esc(dependencyVerdictLabels[verdict])} · ${matching.length}</a></li>`
+        : "";
+    })
+    .join("");
+  const selected = sampled[0];
+  const verdict = selected?.item.verdict;
+  const condition = selected?.proof?.conditions.find(
+    (condition) =>
+      condition.status ===
+      (verdict === "ruled_out"
+        ? "ruled_out"
+        : verdict === "exploitable"
+          ? "met"
+          : "unknown"),
+  );
+  const deciding = selected?.assessment.questionChecks?.[0]?.missingEvidence;
+  const evidence =
+    condition?.label ?? selected?.assessment.remainingQuestions[0];
+  const coverage = stack.coverage;
+  const limits = [
+    ...new Set([...coverage.truncated, ...coverage.truncationUnknown]),
+  ].length;
+  const gaps = findings.length - sampled.length;
+  return `<section class="stack-overview" aria-label="Investigation summary">
+    <h2>Sampled path verdicts</h2>
+    ${verdicts ? `<ul class="stack-verdicts">${verdicts}</ul>` : "<p>No sampled stacks were assessed.</p>"}
+    ${stack.callerScope ? `<details class="stack-caller" open><summary>Caller scope</summary><p>${prose(stack.callerScope)}</p></details>` : ""}
+    ${selected && evidence ? `<p><strong>${condition?.status === "ruled_out" ? "Ruled-out condition" : condition?.status === "met" ? "Supported condition" : "Open condition"} for <a href="#${selected.id}">this assessment</a></strong> · ${prose(evidence)}${condition ? " · " + prose(condition.explanation) : ""}</p>` : ""}
+    ${deciding && deciding !== evidence ? `<p><strong>Missing evidence</strong> · ${prose(deciding)}</p>` : ""}
+    <p><strong>Aggregate verdict</strong> · ${esc(dependencyVerdictLabels[stack.verdict])}</p>
+    ${windows.size === 1 ? `<p><strong>Sampling window</strong> · ${esc([...windows][0]!)}</p>` : ""}
+    <details class="stack-coverage">
+      <summary>Sampling coverage · ${sampled.length} sampled · ${gaps} without a sample${limits ? ` · ${limits} incomplete or unverified work items` : ""}</summary>
+      ${findings.length ? `<div class="stack-coverage-scroll" role="region" aria-label="Sampling coverage table" tabindex="0"><table><thead><tr><th scope="col">Scope</th><th scope="col">Window</th><th scope="col">Result</th><th scope="col">Samples</th><th scope="col">Query</th></tr></thead><tbody>${samplingRows(findings)}</tbody></table></div>` : ""}
+    </details>
+  </section>`;
 }
 
 /** Keep stdout scannable at the terminal. The Markdown and JSON retain the full evidence. */

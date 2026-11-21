@@ -6,15 +6,20 @@ import { main, runCodexSkillCommand } from "../src/cli.js";
 import { parse as parseToml } from "smol-toml";
 import { DependencyAttemptStore } from "../src/dependency-attempt-store.js";
 import { lookupDependencyAdvisory } from "../src/dependency-advisory.js";
+import { readStackReport } from "../src/dependency-report-stacks.js";
 import { analyzeStackAdvisory } from "../src/dependency-stack-advisory.js";
 import { prepareStackPacket } from "../src/stack-packet.js";
 import { sqliteDatabaseOpener } from "../src/runtime.js";
 import {
   prepareStackCheckPacket,
   readStackPacket,
+  sampledStacksSchema,
   stackPacketWorkItems,
 } from "../src/dependency-stack-packet.js";
-import type { StackInvestigationReport } from "../src/dependency-stack-assessment.js";
+import {
+  stackInvestigationReportSchema,
+  type StackInvestigationReport,
+} from "../src/dependency-stack-assessment.js";
 import {
   dependencyClaimHash,
   type DependencyClaimReference,
@@ -277,6 +282,66 @@ test("an unchanged finalized packet with a legacy read-stacks receipt retains it
   expect(JSON.stringify(await readFinalStackReport(state))).toBe(originalBytes);
   expect(JSON.stringify(await call("finalize"))).toBe(originalBytes);
   expect(savedBytes()).toBe(saved);
+});
+
+test("reports preserve capture depth and provenance and reopen sealed legacy reports", async () => {
+  await using dir = await scopedTemporaryDirectory("stack-report-metadata-");
+  const files = await sample(dir.path, true);
+  const stacks = sampledStacksSchema.parse(
+    JSON.parse(await readFile(files.stacksPath, "utf8")),
+  );
+  const query = stacks.queries[0]!;
+  query.provenance = { source: "sample profiler" };
+  query.groups[0]!.observations[0]!.frames.push({
+    name: "outer",
+    type: "javascript",
+  });
+  await writeFile(files.stacksPath, JSON.stringify(stacks));
+  const { state, call, row } = await startProof(dir.path, files);
+  await call("record-assessments", { items: [row] });
+  const finalized = stackInvestigationReportSchema.parse(
+    await call("finalize"),
+  );
+  expect(finalized.assessments[0]).toMatchObject({
+    queryProvenance: query.provenance,
+    observation: {
+      capturedFrameCount: 3,
+      frames: [{ rawIndex: 0 }, { rawIndex: 1 }],
+    },
+  });
+  expect(await readFinalStackReport(state)).toEqual(finalized);
+  const duplicate = structuredClone(finalized);
+  const frames = duplicate.assessments[0]!.observation!.frames;
+  frames.push(frames[0]!);
+  expect(stackInvestigationReportSchema.safeParse(duplicate).success).toBe(
+    false,
+  );
+
+  const legacy = structuredClone(finalized);
+  delete legacy.assessments[0]!.queryProvenance;
+  delete legacy.assessments[0]!.observation!.capturedFrameCount;
+  const store = new DependencyAttemptStore(state, { create: false });
+  try {
+    store.set("report", "final", legacy);
+  } finally {
+    store.close();
+  }
+  expect(await readFinalStackReport(state)).toEqual(legacy);
+  expect(await call("finalize")).toEqual(legacy);
+  const review = {
+    draftDigest: dependencyClaimHash(legacy),
+    decisions: [
+      {
+        workItemId: row.workItemId,
+        reason: "The saved evidence supports the disposition.",
+        followUp: null,
+      },
+    ],
+  };
+  expect(readStackReport({ ...legacy, review })).toMatchObject({
+    review,
+    assessments: [{ reviewReason: review.decisions[0]!.reason }],
+  });
 });
 
 test("trigger analysis checks quotations and addresses each supplied sink", async () => {

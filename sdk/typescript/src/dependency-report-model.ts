@@ -288,14 +288,21 @@ function prepareCheck(check: Check, index: number) {
   }
   return prepareFindings(findings, dismissed);
 }
+export function isCoverageGap(finding: Finding): boolean {
+  return (
+    finding.kind === "coverage" ||
+    (finding.kind === "stack" && !finding.assessment.observation)
+  );
+}
+
 function prepareFindings(
   findings: Finding[],
   dismissed: Finding[] = [],
 ): PreparedCheck {
-  // Unresolved coverage follows unknown uses. Stable sorting keeps ties in input order.
+  // Keep coverage gaps last, matching the navigation. Stable sorting preserves ties.
   const rank = (finding: Finding) =>
-    finding.kind === "coverage"
-      ? 2.5
+    finding.kind === "coverage" || isCoverageGap(finding)
+      ? verdictOrder.length
       : verdictOrder.indexOf(finding.item.verdict);
   findings.sort((a, b) => rank(a) - rank(b));
   return { findings, dismissed };

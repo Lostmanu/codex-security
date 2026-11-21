@@ -310,7 +310,9 @@ function trace(f: Finding) {
 }
 function callPath(f: Finding, target?: Report["target"]) {
   if (f.kind !== "stack" || !f.assessment.observation) return trace(f);
-  const { frames, notes } = inspectPath(f, target);
+  const { capturedFrameCount, sourceIndex } = f.assessment.observation;
+  const { frames, inferredAsync, notes, omittedAtRoot, omittedAtLeaf } =
+    inspectPath(f, target);
   const roles = {
     source: "source",
     sink: "matched sink",
@@ -323,6 +325,10 @@ function callPath(f: Finding, target?: Report["target"]) {
   const site = f.proof?.sink?.callSite;
   const reviewed = site && matchTraceFrame(f, "sink", site);
   let includesReviewedCall = false;
+  if (omittedAtRoot)
+    steps.push(
+      `… ${omittedAtRoot} captured ${omittedAtRoot === 1 ? "frame" : "frames"} omitted above`,
+    );
   for (const frame of frames) {
     const { omittedBefore, line, code: excerpt } = frame;
     if (omittedBefore)
@@ -339,6 +345,7 @@ function callPath(f: Finding, target?: Report["target"]) {
         : undefined;
     const sink =
       text &&
+      frame.isCallSite &&
       reviewed &&
       "index" in reviewed &&
       excerpt?.citationIndex === reviewed.index &&
@@ -348,10 +355,10 @@ function callPath(f: Finding, target?: Report["target"]) {
     if (sink) includesReviewedCall = true;
     const role = join(
       [
-        roles[frame.role],
-        frame.role !== "source" &&
-          frame.rawIndex === f.assessment.observation.sourceIndex &&
-          "source",
+        frame.role === "sink" && !frame.isAssessedSink
+          ? "additional sink match"
+          : roles[frame.role],
+        frame.role !== "source" && frame.rawIndex === sourceIndex && "source",
       ],
       ", ",
     );
@@ -367,9 +374,19 @@ function callPath(f: Finding, target?: Report["target"]) {
     const step = blocks(label, excerpt && text && snippet(excerpt.path, text));
     steps.push(step.replace(/\n(?=[^\n])/gu, "\n  "));
   }
+  if (omittedAtLeaf)
+    steps.push(
+      `… ${omittedAtLeaf} captured ${omittedAtLeaf === 1 ? "frame" : "frames"} omitted below`,
+    );
   const source = includesReviewedCall && !f.item.trace?.length ? "" : trace(f);
   return blocks(
-    "**Sampled stack** · caller first",
+    inferredAsync
+      ? "**Inferred async creator stack** · caller first"
+      : "**Sampled stack** · caller first",
+    inferredAsync &&
+      "The creator stack is a separate sample. The async handoff remains inferred.",
+    capturedFrameCount !== undefined &&
+      `Showing ${frames.length} of ${capturedFrameCount} captured frames.`,
     list(steps),
     notes.map(prose).join(" "),
     frames.length > 0 &&

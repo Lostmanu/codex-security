@@ -119,3 +119,20 @@ test("reviewed exports preserve each decision and the frozen advisory", () => {
     ).toContain("Registry unavailable.");
   }
 });
+
+test("opens sampled findings before coverage gaps regardless of verdict or input order", () => {
+  const input = stackReport();
+  const [observed, missing] = input.assessments;
+  const html = renderDependencyReport({
+    ...input,
+    assessments: [missing, { ...observed, verdict: "ruled_out" }],
+  });
+  const first = html.indexOf('data-entry="stack-1-2"');
+  const gap = html.indexOf('data-entry="stack-1-1"');
+  expect(first).toBeGreaterThan(-1);
+  expect(gap).toBeGreaterThan(first);
+  expect(html.indexOf("Coverage gaps")).toBeLessThan(gap);
+  expect(html.indexOf('data-finding id="stack-1-2"')).toBeLessThan(
+    html.indexOf('data-finding id="stack-1-1"'),
+  );
+});

@@ -248,23 +248,52 @@ const coverageSchema = z.strictObject({
 const querySchema = sampledStacksSchema.shape.queries.element;
 const captured =
   querySchema.shape.groups.element.shape.observations.element.shape;
-const observationCitation = z.strictObject({
-  id: text,
-  stackHash: text,
-  framesTruncated: captured.framesTruncated,
-  observedAt: captured.observedAt,
-  sinkIds: captured.sinkIds,
-  sinkMatches: captured.sinkMatches.unwrap(),
-  sinkIndex: z.number().int().nonnegative().nullable(),
-  sourceIndex: z.number().int().nonnegative().nullable(),
-  frames: z.array(
-    z.strictObject({
-      rawIndex: z.number().int().nonnegative(),
-      frame: captured.frames.element,
-    }),
-  ),
-  bindings: captured.bindings.unwrap(),
-});
+const observationCitation = z
+  .strictObject({
+    id: text,
+    stackHash: text,
+    framesTruncated: captured.framesTruncated,
+    capturedFrameCount: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe(
+        "Frame count before the report selected a subset of the capture.",
+      ),
+    observedAt: captured.observedAt,
+    sinkIds: captured.sinkIds,
+    sinkMatches: captured.sinkMatches.unwrap(),
+    sinkIndex: z.number().int().nonnegative().nullable(),
+    sourceIndex: z.number().int().nonnegative().nullable(),
+    frames: z.array(
+      z.strictObject({
+        rawIndex: z.number().int().nonnegative(),
+        frame: captured.frames.element,
+      }),
+    ),
+    bindings: captured.bindings.unwrap(),
+  })
+  .superRefine(({ capturedFrameCount, frames }, ctx) => {
+    const seen = new Set<number>();
+    for (const [i, { rawIndex }] of frames.entries()) {
+      if (seen.has(rawIndex)) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["frames", i, "rawIndex"],
+          message: "Duplicate captured frame index.",
+        });
+      }
+      seen.add(rawIndex);
+      if (capturedFrameCount !== undefined && rawIndex >= capturedFrameCount) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["frames", i, "rawIndex"],
+          message: "Frame index is outside the reported capture.",
+        });
+      }
+    }
+  });
 export const stackReviewDecisionSchema = z.strictObject({
   workItemId: text,
   reason: text,
@@ -289,6 +318,7 @@ export const stackInvestigationReportSchema = z.strictObject({
       queryId: text,
       groupId: text,
       status,
+      queryProvenance: querySchema.shape.provenance,
       queryScope: querySchema.shape.scope,
       scope: querySchema.shape.scope,
       scopeConflicts: z.array(text),
@@ -870,6 +900,7 @@ export function finalizeStackReport(
       queryId: w.queryId,
       groupId: w.groupId,
       status: w.status === "no_indexed_match" ? "no_coverage" : w.status,
+      ...(w.queryProvenance && { queryProvenance: w.queryProvenance }),
       queryScope: w.queryScope,
       scope: w.scope,
       scopeConflicts: w.scopeConflicts,
@@ -878,6 +909,7 @@ export function finalizeStackReport(
         id: o.id,
         stackHash: o.stackHash,
         framesTruncated: o.framesTruncated,
+        capturedFrameCount: o.frames.length,
         observedAt: o.observedAt,
         sinkIds: o.sinkIds,
         sinkMatches: stackSinkMatches(o),
