@@ -20,7 +20,7 @@ import {
   type StackWorkItem,
 } from "./dependency-stack-packet.js";
 import { effectiveStackSinks } from "./dependency-stack-advisory.js";
-import { comparePythonReleases } from "./dependency-advisory-version.js";
+import { pythonReleaseMatches } from "./dependency-python-version.js";
 import { dependencyGitCommitSchema } from "./dependency-source-identity.js";
 import {
   inventoryReceiptSelectionSchema,
@@ -377,32 +377,6 @@ function coversRange(
   return false;
 }
 
-/** Compare stable numeric PEP 440 releases. Leave other Python versions to cited source proof. */
-function pythonReleaseMatches(
-  version: string,
-  specifier: string,
-): boolean | undefined {
-  let unknown = false;
-  for (const term of specifier.split(",")) {
-    const match = /^\s*(<=|>=|==|!=|<|>)\s*(\d+(?:\.\d+)*)\s*$/u.exec(term);
-    if (!match) {
-      unknown = true;
-      continue;
-    }
-    const order = comparePythonReleases(version, match[2]!);
-    if (order === undefined) return;
-    const result = {
-      "<": order < 0,
-      ">": order > 0,
-      "<=": order <= 0,
-      ">=": order >= 0,
-      "==": order === 0,
-      "!=": order !== 0,
-    }[match[1]!];
-    if (!result) return false;
-  }
-  return unknown ? undefined : true;
-}
 type StackSink = StackPacket["sinks"]["sinks"][number];
 function affectedVersion(
   sink: StackSink,

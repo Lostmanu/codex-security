@@ -1,4 +1,5 @@
 import semver from "semver";
+import { pythonVersionMatches } from "./dependency-python-version.js";
 import type {
   DependencyPackage,
   lookupDependencyAdvisory,
@@ -9,23 +10,6 @@ type Advisory = Awaited<
 >["advisories"][number];
 type Affected = Advisory["affected"][number];
 type Range = NonNullable<Affected["ranges"]>[number];
-
-/** PEP 440 pads stable numeric releases with zeros for comparison. */
-export function comparePythonReleases(
-  left: string,
-  right: string,
-): number | undefined {
-  const numeric = /^\d+(?:\.\d+)*$/u;
-  if (!numeric.test(left) || !numeric.test(right)) return;
-  const a = left.split(".").map(BigInt);
-  const b = right.split(".").map(BigInt);
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    const first = a[i] ?? 0n;
-    const second = b[i] ?? 0n;
-    if (first !== second) return first < second ? -1 : 1;
-  }
-  return 0;
-}
 
 // OSV's ordered events delimit disjoint intervals. Only rule out an entire
 // version when every relevant range is understood and excludes it.
@@ -111,8 +95,7 @@ export function affectedByFrozenVersion(
     const versions = (entry.versions ?? []).map((listed) => {
       if (listed === version) return true;
       if (pkg.ecosystem !== "PyPI") return false;
-      const order = comparePythonReleases(version, listed);
-      return order === undefined ? undefined : order === 0;
+      return pythonVersionMatches(version, listed);
     });
     const ranges = (entry.ranges ?? []).map((range) =>
       inRange(version, range, pkg.ecosystem),
