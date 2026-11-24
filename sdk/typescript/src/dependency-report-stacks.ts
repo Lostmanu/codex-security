@@ -1,6 +1,7 @@
 import { claimKey } from "./dependency-report-proof.js";
 import {
   stackInvestigationReportSchema,
+  stackReportVersion,
   type StackInvestigationReport,
 } from "./dependency-stack-assessment.js";
 import type { DependencyClaimReference } from "./dependency-stack-claims.js";
@@ -42,12 +43,7 @@ export type StackAssessment =
     claims: Claim[];
     missingClaims: DependencyClaimReference[];
   };
-export type StackReport = Omit<
-  StackInvestigationReport,
-  "claims" | "assessments"
-> & {
-  assessments: StackAssessment[];
-};
+export type StackReport = NonNullable<ReturnType<typeof readStackReport>>;
 // The captured indices are leaf-first. Display caller-first without implying
 // that two saved, nonadjacent frames represent a direct call.
 export function stackFrames(
@@ -64,13 +60,8 @@ export function stackFrames(
   }));
 }
 
-export function readStackReport(value: unknown): StackReport | undefined {
-  if (
-    !isRecord(value) ||
-    value["schemaVersion"] !==
-      stackInvestigationReportSchema.shape.schemaVersion.value
-  )
-    return;
+export function readStackReport(value: unknown) {
+  if (!isRecord(value) || value["schemaVersion"] !== stackReportVersion) return;
   const { claims, assessments, ...report } =
     stackInvestigationReportSchema.parse(value);
   const records = new Map<string, Claim>();

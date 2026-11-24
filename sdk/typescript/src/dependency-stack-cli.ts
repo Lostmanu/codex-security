@@ -16,6 +16,7 @@ import { CodexSecurityError } from "./errors.js";
 import { writeDependencyReportFile } from "./dependency-check-output.js";
 import { formatSecurityPolicyText } from "./security-policy.js";
 import { executeStackRun, stackRunTools } from "./dependency-stack-run.js";
+import { liveInitInputSchema } from "./dependency-stack-live.js";
 
 export interface DependencyAgentRequest {
   prompt: string;
@@ -80,6 +81,13 @@ export function createExploitabilityCli(context: DependencyCliContext) {
               .optional()
               .describe("Directory containing the prepared input packet."),
             repo: flag.describe("Target Git checkout."),
+            vulnDescription: z
+              .string()
+              .regex(/\S/u)
+              .optional()
+              .describe(
+                "Caller-supplied hypothesis for the named package. Requires a package and excludes CVE and packet inputs.",
+              ),
             jsonStdin: z
               .boolean()
               .optional()
@@ -99,9 +107,18 @@ export function createExploitabilityCli(context: DependencyCliContext) {
     run.command(tool.name, {
       description: tool.description,
       format: "json",
+      ...(tool.name === "init" && {
+        args: z.object({
+          package: flag
+            .optional()
+            .describe(
+              "Ecosystem-qualified package, such as PyPI:example-parser. Requires --vuln-description.",
+            ),
+        }),
+      }),
       options,
       mcp: false,
-      async run({ options: opts, format }) {
+      async run({ args, options: opts, format }) {
         return context.withSignal(async (signal) => {
           const dir = context.currentDirectory();
           let input: unknown;
@@ -114,6 +131,28 @@ export function createExploitabilityCli(context: DependencyCliContext) {
             throw new CodexSecurityError(
               "Use --json-stdin to provide input for " + tool.name + ".",
             );
+          }
+          if (tool.name === "init") {
+            const pkg = args.package;
+            const description =
+              "vulnDescription" in opts ? opts.vulnDescription : undefined;
+            if (pkg !== undefined || description !== undefined) {
+              if (!pkg || !description)
+                throw new CodexSecurityError(
+                  "Supply an ecosystem-qualified package and --vuln-description together.",
+                );
+              const metadata = liveInitInputSchema.parse(
+                input === undefined ? {} : input,
+              );
+              if (metadata.hypothesis)
+                throw new CodexSecurityError(
+                  "Supply the hypothesis once, on the command line or in JSON.",
+                );
+              input = {
+                ...metadata,
+                hypothesis: { package: pkg, description },
+              };
+            }
           }
           const result = await executeStackRun(tool.name, {
             state: resolveConfigPath(dir, opts.state),

@@ -322,7 +322,7 @@ function advisoryDetails(
     field("Applies when", applicability) +
     field("Advisory sources", sources);
   const body =
-    section.stack && !details.length
+    section.stack && "cve" in section.stack && !details.length
       ? "<p>This capture omits the advisory description.</p>"
       : rows
         ? `<dl class="facts">${rows}</dl>`

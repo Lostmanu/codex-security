@@ -82,7 +82,20 @@ An external caller can freeze the same files with `prepareStackPacket` from `@op
 
 Use `next` to select the outstanding work item and read its complete captured frames, original frame indices, bindings and capture receipt. `record-evidence` saves pinned source ranges or an original runtime result or resource; `record-observations` registers additional runtime queries and their work items as evidence becomes available. Use `record-claims` to save supported facts and `query-claims` to retrieve their exact references. Use `record-assessments`, `summarize-coverage` and `finalize` to produce the scoped report. Operations with a JSON input accept `--json-stdin`. Each `run` operation prints JSON by default. Use `--format` to select another representation. The investigation state is local to the supplied SQLite file. These lower-level operations run offline. A direct `run finalize` returns an immutable report with `review: null`.
 
-For example, start a run before its advisory or runtime information is complete:
+To investigate a specific function and version without a CVE, pass the ecosystem-qualified package and `--vuln-description` together. Use the distribution name for the package, even when the import has a different name. Register the exact sink and version constraint through `--json-stdin`, either at initialization or when reopening the same state.
+
+```sh
+export CODEX_SECURITY_ENABLE_DEPENDENCY_EXPLOITABILITY=1
+cs exploitability run init PyPI:example-parser \
+  --vuln-description 'Is example.parse() called in version 1.2.3?' \
+  --repo "$TARGET" --state "$STATE" --json-stdin <<'JSON'
+{"sinks":[{"id":"example.parse","function":"parse","package":"example-parser","versionScheme":"pep440","affectedVersions":["==1.2.3"],"preconditions":[]}]}
+JSON
+```
+
+This records one caller-supplied `hypothesis` with `package` and `description`. You can also supply that object in the initialization JSON. Set `callerScope` there before recording claims or assessments to preserve a requested workload or caller. The description is free text. It does not filter stacks or verify the version. Match the registered function to the observed frame and the version to its dependency binding. For a reachability question with no vulnerability conditions, report the evidence of use separately from any security verdict.
+
+The hypothesis persists across resumes and appears with the registered sinks in the final report. Use fresh state to change it. A hypothesis cannot be combined with a CVE, advisory, or prepared packet. Without a hypothesis, the existing CVE workflow applies. For example, you can start before the advisory or runtime information is complete.
 
 ```sh
 export CODEX_SECURITY_ENABLE_DEPENDENCY_EXPLOITABILITY=1

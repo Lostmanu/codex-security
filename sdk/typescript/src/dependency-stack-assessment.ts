@@ -16,7 +16,10 @@ import {
   stackManifestSchema,
   stackPacketWorkItems,
   stackSinkMatches,
-  type StackPacket,
+  stackHypothesisSchema,
+  stackSubject,
+  stackSinksSchema,
+  type StackRunPacket,
   type StackWorkItem,
 } from "./dependency-stack-packet.js";
 import { effectiveStackSinks } from "./dependency-stack-advisory.js";
@@ -299,8 +302,9 @@ export const stackReviewDecisionSchema = z.strictObject({
   reason: text,
   followUp: text.nullable(),
 });
-export const stackInvestigationReportSchema = z.strictObject({
-  schemaVersion: z.literal("codex-security.pipeline-stacks.report/v1"),
+export const stackReportVersion = "codex-security.pipeline-stacks.report/v1";
+export const cveStackReportSchema = z.strictObject({
+  schemaVersion: z.literal(stackReportVersion),
   cve: text,
   callerScope: stackManifestSchema.shape.callerScope,
   advisoryDetails: stackManifestSchema.shape.advisoryDetails,
@@ -338,6 +342,22 @@ export const stackInvestigationReportSchema = z.strictObject({
     })
     .nullable(),
 });
+export const stackInvestigationReportSchema = z.union([
+  cveStackReportSchema,
+  cveStackReportSchema
+    .omit({
+      cve: true,
+      advisoryDetails: true,
+      advisoryLookupError: true,
+      triggerAnalysis: true,
+    })
+    .extend({
+      hypothesis: stackHypothesisSchema,
+      sinks: z
+        .array(z.object(stackSinksSchema.shape.sinks.element.shape))
+        .min(1),
+    }),
+]);
 export type StackInvestigationReport = z.output<
   typeof stackInvestigationReportSchema
 >;
@@ -433,7 +453,7 @@ function pythonReleaseMatches(
   }
   return unknown ? undefined : true;
 }
-type StackSink = StackPacket["sinks"]["sinks"][number];
+type StackSink = StackRunPacket["sinks"]["sinks"][number];
 function affectedVersion(
   sink: StackSink,
   version: string,
@@ -458,7 +478,7 @@ function affectedVersion(
 function assessProof(
   row: StackAssessment,
   work: StackWorkItem,
-  packet: StackPacket,
+  packet: StackRunPacket,
   records: readonly DependencyClaimRecord[],
 ) {
   const observation = work.observation;
@@ -683,9 +703,17 @@ function assessProof(
   const applicable = selectedFrames.filter(({ sink }) => !disproved(sink));
   if (!applicable.length)
     fail("A required advisory condition was ruled out for this path.");
-  const possible = applicable.filter(({ fixed }) => !fixed);
-  if (!possible.length)
+  const candidates = applicable.filter(({ fixed }) => !fixed);
+  if (!candidates.length)
     fail("The observed dependency version falls outside the affected ranges.");
+  const possible =
+    "hypothesis" in packet.manifest
+      ? candidates.filter(({ sink }) => sink.preconditions.length > 0)
+      : candidates;
+  if (!possible.length)
+    fail(
+      "A sink and version alone establish no vulnerability. Report reachability with an unknown security verdict.",
+    );
   const version = use.version;
   if (row.verdict === "potentially_exploitable") {
     if (
@@ -807,7 +835,7 @@ function verifyQuestionChecks(
 export function prepareStackAssessment(
   input: unknown,
   work: StackWorkItem,
-  packet: StackPacket,
+  packet: StackRunPacket,
   claims: StackClaimReader,
   signal?: AbortSignal,
 ): StackAssessment {
@@ -849,7 +877,7 @@ export function prepareStackAssessment(
 }
 
 export function summarizeStackCoverage(
-  packet: StackPacket,
+  packet: StackRunPacket,
   assessments: readonly StackAssessment[],
 ) {
   const items = stackPacketWorkItems(packet);
@@ -876,7 +904,7 @@ export function summarizeStackCoverage(
 }
 
 export function finalizeStackReport(
-  packet: StackPacket,
+  packet: StackRunPacket,
   assessments: readonly StackAssessment[],
   claims: StackClaimReader,
 ): StackInvestigationReport {
@@ -924,17 +952,18 @@ export function finalizeStackReport(
     };
   });
   const coverage = summarizeStackCoverage(packet, assessments);
-  const { runId, attemptId, inputDigest, toolRevision, target, cve } =
+  const { runId, attemptId, inputDigest, toolRevision, target } =
     packet.manifest;
   return stackInvestigationReportSchema.parse({
-    schemaVersion: "codex-security.pipeline-stacks.report/v1",
+    schemaVersion: stackReportVersion,
     review: null,
     runId,
     attemptId,
     inputDigest,
     toolRevision,
     target,
-    cve,
+    ...stackSubject(packet.manifest),
+    ...("hypothesis" in packet.manifest && { sinks: packet.sinks.sinks }),
     ...(packet.manifest.callerScope && {
       callerScope: packet.manifest.callerScope,
     }),

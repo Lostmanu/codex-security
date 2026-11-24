@@ -35,6 +35,8 @@ import {
   readStackPacket,
   stackFramesRootFirst,
   stackPacketWorkItems,
+  stackSubject,
+  type StackRunPacket,
   type StackPacket,
 } from "./dependency-stack-packet.js";
 import { CodexSecurityError } from "./errors.js";
@@ -276,14 +278,14 @@ export function reviseLocalStackReport(
   }
 }
 
-function captureId(packet: StackPacket, item: WorkItem) {
+function captureId(packet: StackRunPacket, item: WorkItem) {
   return (
     "capture-" + dependencyClaimHash([packet.manifest.inputDigest, item.id])
   );
 }
 
 function selectReceipt(
-  packet: StackPacket,
+  packet: StackRunPacket,
   items: Map<string, WorkItem>,
   store: DependencyAttemptStore,
   receiptId: string,
@@ -330,7 +332,7 @@ function selectReceipt(
 
 async function prepareClaims(
   rows: ClaimInput[],
-  packet: StackPacket,
+  packet: StackRunPacket,
   workItems: WorkItem[],
   repository: string,
   store: DependencyAttemptStore,
@@ -436,7 +438,7 @@ function packetSnapshot(store: DependencyAttemptStore, base?: StackPacket) {
 
 function reportWithEffectiveInputs(
   store: DependencyAttemptStore,
-  packet: StackPacket,
+  packet: StackRunPacket,
   report: StackInvestigationReport,
 ): StackInvestigationReport {
   if (
@@ -450,6 +452,9 @@ function reportWithEffectiveInputs(
     effectiveInputDigest: dependencyClaimHash({
       format: "codex-security.stack-effective-input/v1",
       inputDigest: packet.manifest.inputDigest,
+      ...(getLiveRun(store)?.callerScope && {
+        callerScope: packet.manifest.callerScope,
+      }),
       target: packet.manifest.target,
       sources: packet.sources,
       sinks: packet.sinks,
@@ -464,11 +469,17 @@ function nextItem(items: WorkItem[], assessments: StackAssessment[]) {
   return items.find((item) => !complete.has(item.id));
 }
 
-function openClaims(store: DependencyAttemptStore, { manifest }: StackPacket) {
+function openClaims(
+  store: DependencyAttemptStore,
+  { manifest }: StackRunPacket,
+) {
   return createDependencyClaims(
     {
       inputDigest: manifest.inputDigest,
-      cve: manifest.cve,
+      ...stackSubject(manifest),
+      ...(getLiveRun(store)?.callerScope && {
+        callerScope: manifest.callerScope,
+      }),
       target: manifest.target,
     },
     store,
@@ -477,7 +488,7 @@ function openClaims(store: DependencyAttemptStore, { manifest }: StackPacket) {
 
 async function verifyFinal(
   store: DependencyAttemptStore,
-  packet: StackPacket,
+  packet: StackRunPacket,
   repository: string,
   claims: Ledger,
   requireSaved: boolean,
@@ -764,9 +775,9 @@ export async function executeStackRun(
               )
             : [],
           target: manifest.target,
-          cve: manifest.cve,
+          ...stackSubject(manifest),
           ...(manifest.callerScope && { callerScope: manifest.callerScope }),
-          advisory: manifest.advisory,
+          ...("advisory" in manifest && { advisory: manifest.advisory }),
           ...(manifest.triggerAnalysis && {
             triggerAnalysis: manifest.triggerAnalysis,
           }),

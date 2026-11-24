@@ -662,7 +662,7 @@ function sampleLimits(stack: StackReport, findings: Finding[]) {
     para(
       "Samples show what ran in one window. Missing samples do not rule out execution. Sample counts are not call counts.",
     ) +
-    (stack.advisoryLookupError
+    ("cve" in stack && stack.advisoryLookupError
       ? para("Advisory lookup failed · " + stack.advisoryLookupError)
       : "") +
     limits +

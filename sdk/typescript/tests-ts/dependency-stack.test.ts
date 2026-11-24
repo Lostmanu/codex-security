@@ -183,6 +183,10 @@ async function startProof(
       db.close();
     }
   }
+  return { inputs, ...(await capturedProof(state)) };
+}
+
+async function capturedProof(state: string) {
   const call = (command: string, input?: unknown) =>
     executeStackRun(command, { state, input });
   const { workItem, receiptId, rootFirstRawIndices } = (await call("next")) as {
@@ -244,8 +248,74 @@ async function startProof(
       },
     },
   };
-  return { inputs, state, call, capture, claims, write, row };
+  return { state, call, capture, claims, write, row };
 }
+
+test("observing a requested sink and version cannot establish an unspecified vulnerability", async () => {
+  await using dir = await scopedTemporaryDirectory("stack-reachability-");
+  const files = await sample(dir.path, true);
+  const state = join(dir.path, "run.sqlite");
+  const { sinks } = JSON.parse(await readFile(files.sinksPath, "utf8"));
+  const { queries } = JSON.parse(await readFile(files.stacksPath, "utf8"));
+  const hypothesis = {
+    package: "npm:sample-codec",
+    description: "Is decode called in 1.0.0?",
+  };
+  await executeStackRun("init", {
+    state,
+    repo: files.repo,
+    input: {
+      hypothesis,
+      sinks: [{ ...sinks[0], affectedVersions: ["1.0.0"], preconditions: [] }],
+    },
+  });
+  const receipt = (await executeStackRun("record-evidence", {
+    state,
+    input: {
+      kind: "runtime",
+      server: "fixture",
+      tool: "profiles",
+      result: { queries },
+    },
+  })) as { receiptId: string };
+  await executeStackRun("record-observations", {
+    state,
+    input: { receiptId: receipt.receiptId },
+  });
+  const { call, row, claims } = await capturedProof(state);
+  await expect(call("record-assessments", { items: [row] })).rejects.toThrow(
+    /alone establish no vulnerability/,
+  );
+  const question = "Which vulnerability condition applies?";
+  await call("record-assessments", {
+    items: [
+      {
+        workItemId: row.workItemId,
+        verdict: "unknown",
+        reason: "Observed decode at version 1.0.0.",
+        supportingClaims: claims,
+        remainingQuestions: [question],
+        questionChecks: [
+          {
+            question,
+            claims,
+            checked: "Verified the version at the sampled frame.",
+            missingEvidence: "No issue was specified.",
+          },
+        ],
+      },
+    ],
+  });
+  expect(await call("finalize")).toMatchObject({
+    hypothesis,
+    verdict: "unknown",
+    assessments: [
+      {
+        observation: { sinkIds: ["decode"], bindings: [{ version: "1.0.0" }] },
+      },
+    ],
+  });
+});
 
 test("an unchanged finalized packet with a legacy read-stacks receipt retains its report bytes", async () => {
   await using dir = await scopedTemporaryDirectory("stack-legacy-final-");

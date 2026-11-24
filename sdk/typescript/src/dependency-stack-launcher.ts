@@ -17,7 +17,7 @@ import type { DependencyProgressSink } from "./dependency-check-output.js";
 import { finishOneShotInvestigation } from "./dependency-investigation-correction.js";
 import { analyzeStackAdvisory } from "./dependency-stack-advisory.js";
 import {
-  stackInvestigationReportSchema,
+  cveStackReportSchema,
   stackReviewDecisionSchema,
   type StackInvestigationReport,
 } from "./dependency-stack-assessment.js";
@@ -261,7 +261,7 @@ export async function runLocalStackInvestigation(options: {
         }
         return {
           status: "approved",
-          report: stackInvestigationReportSchema.parse({
+          report: cveStackReportSchema.parse({
             ...draft,
             review: { draftDigest: dependencyClaimHash(draft), decisions },
           }),

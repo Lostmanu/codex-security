@@ -308,6 +308,30 @@ export interface StackPacket {
   sinks: z.infer<typeof stackSinksSchema>;
   stacks: z.infer<typeof sampledStacksSchema>;
 }
+
+export const stackHypothesisSchema = z.strictObject({
+  package: text.trim().describe("Ecosystem-qualified package."),
+  description: text.regex(/\S/u).describe("Caller-supplied hypothesis."),
+});
+
+// Prepared packets still require a CVE. Only interactive runs can substitute
+// a caller-supplied hypothesis for the CVE and advisory.
+type RunSubject =
+  | Pick<StackManifest, "cve" | "advisory">
+  | { hypothesis: z.infer<typeof stackHypothesisSchema> };
+export interface StackRunPacket extends Pick<
+  StackPacket,
+  "sources" | "stacks"
+> {
+  manifest: Omit<StackManifest, "cve" | "advisory"> & RunSubject;
+  sinks: Omit<StackPacket["sinks"], "cve" | "advisory"> & RunSubject;
+}
+
+export function stackSubject(manifest: StackRunPacket["manifest"]) {
+  return "hypothesis" in manifest
+    ? { hypothesis: manifest.hypothesis }
+    : { cve: manifest.cve };
+}
 type CaptureScope = StackPacket["stacks"]["queries"][number]["scope"];
 type Workload = z.infer<typeof workload>;
 export interface StackWorkItem {
@@ -406,7 +430,7 @@ function scopeConflicts(
   return conflicts;
 }
 
-export function stackPacketWorkItems(packet: StackPacket): StackWorkItem[] {
+export function stackPacketWorkItems(packet: StackRunPacket): StackWorkItem[] {
   return packet.stacks.queries.flatMap((query) =>
     query.groups.flatMap((group) => {
       const groupId = [query.id, group.id].map(pointerPart).join("/");

@@ -11,7 +11,7 @@ import {
   DependencyInvestigationBlockedError,
 } from "./dependency-check-output.js";
 import type { DependencyCliContext } from "./dependency-stack-cli.js";
-import { stackInvestigationReportSchema } from "./dependency-stack-assessment.js";
+import { cveStackReportSchema } from "./dependency-stack-assessment.js";
 import { formatSecurityPolicyText } from "./security-policy.js";
 import { prepareDependencyReport } from "./dependency-report-model.js";
 import { summarizeDependencyReport } from "./dependency-report-summary.js";
@@ -140,7 +140,7 @@ export function registerDependencyCheck(
     }),
     output: z.union([
       ...dependencyCheckOutputSchema.options,
-      stackInvestigationReportSchema,
+      cveStackReportSchema,
       dependencyScopedBlockedSchema,
       blockedPackage,
       blocked,

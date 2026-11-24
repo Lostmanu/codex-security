@@ -3,7 +3,7 @@ import {
   advisoryTriggerInstructions,
   type FrozenDependencyAdvisory,
 } from "./dependency-advisory.js";
-import type { StackPacket } from "./dependency-stack-packet.js";
+import type { StackPacket, StackRunPacket } from "./dependency-stack-packet.js";
 import { CodexSecurityError } from "./errors.js";
 
 const text = z.string().regex(/\S/u);
@@ -120,7 +120,7 @@ export async function analyzeStackAdvisory(
 }
 
 /** Use the same required labels in the investigator's worklist and in proof validation. */
-export function effectiveStackSinks(packet: StackPacket) {
+export function effectiveStackSinks(packet: StackRunPacket) {
   const { triggerAnalysis } = packet.manifest;
   if (!triggerAnalysis) return packet.sinks.sinks;
   const derived = new Map(

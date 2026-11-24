@@ -3,6 +3,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { main } from "../src/cli.js";
+import { renderDependencyReport } from "../src/dependency-report-renderer.js";
+import { renderDependencyReportMarkdown } from "../src/dependency-report-markdown.js";
 import {
   executeStackRun,
   readFinalStackReport,
@@ -130,6 +132,109 @@ function query(id: string) {
     ],
   };
 }
+
+test("an interactive package hypothesis survives resume, assessment and rendering without a CVE", async () => {
+  await using dir = await scopedTemporaryDirectory("package-stack-");
+  const { repo } = await checkout(dir.path);
+  const state = join(dir.path, "run.sqlite");
+  const hypothesis = {
+    package: "PyPI:example-decoder",
+    description: "Does example.decode() run on version 1.0.0? <sample>",
+  };
+  const selected = {
+    ...sink,
+    versionScheme: "pep440",
+    affectedVersions: ["==1.0.0"],
+    preconditions: [],
+  };
+  async function init(args: string[], metadata: unknown = {}) {
+    const io = createCliTest(main);
+    const deps = dependencies({ currentDirectory: repo });
+    deps.environment["CODEX_SECURITY_ENABLE_DEPENDENCY_EXPLOITABILITY"] = "1";
+    deps.recordsInput = Readable.from([JSON.stringify(metadata)]);
+    const code = await io.runCli(
+      [
+        "exploitability",
+        "run",
+        "init",
+        ...args,
+        "--state",
+        state,
+        "--repo",
+        repo,
+        "--json-stdin",
+      ],
+      deps,
+    );
+    return { code, error: io.stderr.text() };
+  }
+  const flags = [
+    hypothesis.package,
+    "--vuln-description",
+    hypothesis.description,
+  ];
+  for (const args of [
+    [hypothesis.package],
+    flags.slice(1),
+    ["example-decoder", ...flags.slice(1)],
+    [...flags, "--inputs", dir.path],
+  ]) {
+    expect((await init(args)).code).not.toBe(0);
+  }
+  const callerScope = "Requests to the decoder service";
+  const result = await init(flags, { callerScope, sinks: [selected] });
+  expect(result.code, result.error).toBe(0);
+  const resume = (input?: unknown) =>
+    executeStackRun("init", { state, repo, input });
+  await expect(resume({ cve, advisory })).rejects.toThrow(/cannot be combined/);
+  await expect(
+    resume({ hypothesis: { ...hypothesis, description: "Changed" } }),
+  ).rejects.toThrow(/already recorded differently/);
+  await expect(
+    resume({ sinks: [{ ...selected, id: "other", package: "other" }] }),
+  ).rejects.toThrow(/expected example-decoder/);
+  expect(await resume()).toMatchObject({ hypothesis, sinks: [selected] });
+  const run = (command: string, input?: unknown) =>
+    executeStackRun(command, { state, input });
+  const gap = {
+    ...query("first"),
+    groups: [
+      { id: "gap", status: "no_coverage", truncated: null, observations: [] },
+    ],
+  };
+  await run("record-observations", { queries: [gap] });
+  expect(await run("next")).toMatchObject({
+    callerScope,
+    hypothesis,
+    sinks: [selected],
+  });
+  await run("record-assessments", {
+    items: [
+      {
+        workItemId: "first/gap",
+        verdict: "unknown",
+        reason: "No runtime evidence.",
+        remainingQuestions: ["Was decode sampled?"],
+      },
+    ],
+  });
+  const report = await run("finalize");
+  expect(report).toMatchObject({
+    callerScope,
+    hypothesis,
+    sinks: [selected],
+    verdict: "unknown",
+  });
+  expect(report).not.toHaveProperty("cve");
+  expect(report).toEqual(await readFinalStackReport(state));
+  const html = renderDependencyReport(report);
+  expect(html).toContain(hypothesis.package);
+  expect(html).toContain("==1.0.0");
+  expect(html).toContain("&lt;sample&gt;");
+  expect(renderDependencyReportMarkdown(report)).not.toContain(
+    "exploitability check",
+  );
+});
 
 async function packet(root: string, repo: string, sha: string) {
   const documents = {

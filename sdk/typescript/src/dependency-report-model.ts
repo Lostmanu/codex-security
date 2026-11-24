@@ -116,13 +116,26 @@ function unwrap(value: unknown) {
 function readReport(value: unknown): Report {
   const raw = unwrap(value);
   const stack = readStackReport(raw);
-  if (stack)
+  if (stack) {
+    const title =
+      "hypothesis" in stack
+        ? `${stack.hypothesis.package} · Caller-supplied hypothesis`
+        : stack.cve;
     return {
       target: stack.target,
-      title: stack.cve,
+      title,
+      ...("hypothesis" in stack && {
+        description: [
+          stack.hypothesis.description,
+          ...stack.sinks.map(
+            (sink) => `${sink.id} (${sink.affectedVersions.join(" or ")})`,
+          ),
+        ].join("\n"),
+      }),
       context: "Sampled stacks",
-      sections: [{ title: stack.cve, stack }],
+      sections: [{ title, stack }],
     };
+  }
   if (
     isRecord(raw) &&
     raw["status"] === "blocked" &&
@@ -413,7 +426,9 @@ export function prepareDependencyReport(value: unknown): Report {
       section.stack?.assessments.some((a) => a.verdict === "unknown")
     )
       report.contextHint = section.stack
-        ? "Have more context? Describe who controls the input in the relevant entry in your --sources JSON, then rerun cs exploitability check with the updated inputs."
+        ? "hypothesis" in section.stack
+          ? "To assess new evidence, start a fresh cs exploitability run init with the package, --vuln-description and the requested sinks."
+          : "Have more context? Describe who controls the input in the relevant entry in your --sources JSON, then rerun cs exploitability check with the updated inputs."
         : "Have more context? Set exploitability.scope.instructions in project.yaml to describe the callers and what they control, then rerun with --config project.yaml. This replaces the default caller scope.";
     const claims = new Map(section.check?.claims?.map((c) => [claimKey(c), c]));
     if (section.prepared)
@@ -465,10 +480,11 @@ export function sectionAdvisories({ check, stack }: Section) {
   // altering the frozen advisory records used in the input and review digests.
   const details =
     check?.advisoryDetails ??
-    (stack?.advisoryDetails &&
-      reviewedDependencyCheckSchema.shape.advisoryDetails.parse(
-        stack.advisoryDetails,
-      )) ??
+    (stack && "cve" in stack && stack.advisoryDetails
+      ? reviewedDependencyCheckSchema.shape.advisoryDetails.parse(
+          stack.advisoryDetails,
+        )
+      : undefined) ??
     [];
   return { details, urls: check?.advisories ?? details.map((a) => a.url) };
 }

@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { z } from "zod";
+import { parseDependencyPackage } from "./dependency-advisory.js";
+import { pythonDistributionName } from "./dependency-manifests.js";
 import {
   DependencyAttemptStore,
   dependencyRecordHash,
 } from "./dependency-attempt-store.js";
 import {
   sampledStacksSchema,
+  stackHypothesisSchema,
   stackSinkMatches,
   stackSinksSchema,
   stackSourcesSchema,
   type StackPacket,
+  type StackRunPacket,
   type StackWorkItem,
 } from "./dependency-stack-packet.js";
 import { CodexSecurityError } from "./errors.js";
@@ -30,6 +34,8 @@ type Sink = StackPacket["sinks"]["sinks"][number];
 export const liveInitInputSchema = z.strictObject({
   cve: stackSinksSchema.shape.cve.optional(),
   advisory: stackSinksSchema.shape.advisory.optional(),
+  hypothesis: stackHypothesisSchema.optional(),
+  callerScope: text.optional(),
   sources: stackSourcesSchema.shape.sources.optional(),
   sinks: stackSinksSchema.shape.sinks.element.array().optional(),
   repository: text.optional(),
@@ -60,6 +66,8 @@ export interface LiveRun {
   inputDigest: string;
   cve?: string;
   advisory?: StackPacket["manifest"]["advisory"];
+  hypothesis?: z.infer<typeof stackHypothesisSchema>;
+  callerScope?: string;
   sources: Source[];
   sinks: Sink[];
 }
@@ -186,6 +194,34 @@ export async function initializeLive(
     if (sourceIds.has(sink.id)) fail(`Duplicate endpoint ID: ${sink.id}.`);
   const cve = immutable(existing?.cve, update.cve, "CVE");
   const advisory = immutable(existing?.advisory, update.advisory, "advisory");
+  const hypothesis = immutable(
+    existing?.hypothesis,
+    update.hypothesis,
+    "hypothesis",
+  );
+  const callerScope = immutable(
+    existing?.callerScope,
+    update.callerScope,
+    "caller scope",
+  );
+  if (
+    callerScope &&
+    !existing?.callerScope &&
+    (store.claims().length || store.size("stack-assessment"))
+  )
+    fail("Set the caller scope before recording claims or assessments.");
+  if (hypothesis) {
+    if (cve || advisory)
+      fail("A package hypothesis cannot be combined with a CVE or advisory.");
+    const pkg = parseDependencyPackage(hypothesis.package);
+    const name = (value: string) =>
+      pkg.ecosystem === "PyPI" ? pythonDistributionName(value) : value;
+    for (const sink of sinks)
+      if (name(sink.package) !== name(pkg.name))
+        fail(
+          `Sink ${sink.id} belongs to ${sink.package}, expected ${pkg.name}.`,
+        );
+  }
   const next: LiveRun = {
     format: identity.format,
     target,
@@ -198,6 +234,8 @@ export async function initializeLive(
     sinks,
     ...(cve && { cve }),
     ...(advisory && { advisory }),
+    ...(hypothesis && { hypothesis }),
+    ...(callerScope && { callerScope }),
     ...(logicalRepository && { logicalRepository }),
   };
   return store.transaction(() => {
@@ -225,15 +263,24 @@ export async function initializeLive(
   });
 }
 
+function subjectGaps(run: LiveRun): string[] {
+  if (run.hypothesis) return [];
+  if (!run.cve && !run.advisory)
+    return [
+      "Supply a CVE and advisory, or an ecosystem-qualified package with --vuln-description.",
+    ];
+  return [
+    ...(!run.cve ? ["Supply the CVE identifier."] : []),
+    ...(!run.advisory ? ["Supply the advisory URL and summary."] : []),
+  ];
+}
+
 export function liveMetadataGaps(store: DependencyAttemptStore): string[] {
   const run = getLiveRun(store);
   if (!run) return ["Initialize the interactive investigation first."];
   return [
-    ...(!run.cve ? ["Supply the CVE identifier."] : []),
-    ...(!run.advisory ? ["Supply the advisory URL and summary."] : []),
-    ...(!run.sinks.length
-      ? ["Identify and register the vulnerable sink."]
-      : []),
+    ...subjectGaps(run),
+    ...(!run.sinks.length ? ["Identify and register the requested sink."] : []),
     ...(!store.size("supplemental-query")
       ? ["Collect a runtime query or record a concrete coverage gap."]
       : []),
@@ -247,23 +294,22 @@ function fileIdentity(value: unknown) {
   };
 }
 
-export function livePacket(store: DependencyAttemptStore): StackPacket {
+export function livePacket(store: DependencyAttemptStore): StackRunPacket {
   const run = getLiveRun(store);
   if (!run) fail("Initialize the interactive investigation first.");
-  const gaps = [
-    ...(!run.cve ? ["Supply the CVE identifier."] : []),
-    ...(!run.advisory ? ["Supply the advisory URL and summary."] : []),
-  ];
+  const gaps = subjectGaps(run);
   if (gaps.length)
     fail(`Interactive investigation metadata is incomplete. ${gaps.join(" ")}`);
   const sources: StackPacket["sources"] = {
     format: "codex-security.stack-sources/v1",
     sources: run.sources,
   };
-  const sinks: StackPacket["sinks"] = {
+  const subject = run.hypothesis
+    ? { hypothesis: run.hypothesis }
+    : { cve: run.cve!, advisory: run.advisory! };
+  const sinks: StackRunPacket["sinks"] = {
     format: "codex-security.stack-sinks/v1",
-    cve: run.cve!,
-    advisory: run.advisory!,
+    ...subject,
     sinks: run.sinks,
   };
   const stacks: StackPacket["stacks"] = {
@@ -276,8 +322,8 @@ export function livePacket(store: DependencyAttemptStore): StackPacket {
   return {
     manifest: {
       format: "codex-security.stack-manifest/v1",
-      cve: run.cve!,
-      advisory: run.advisory!,
+      ...subject,
+      ...(run.callerScope && { callerScope: run.callerScope }),
       target: run.target,
       toolRevision: run.toolRevision,
       inputDigest: run.inputDigest,
@@ -403,8 +449,8 @@ export function normalizeRuntimeObservationQueries(
 
 export function overlayPacket(
   store: DependencyAttemptStore,
-  base?: StackPacket,
-): StackPacket {
+  base?: StackRunPacket,
+): StackRunPacket {
   const packet = base ?? livePacket(store);
   const additions = supplementalQueries(store);
   if (!additions.length) return packet;

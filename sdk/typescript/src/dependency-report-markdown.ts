@@ -579,7 +579,9 @@ function sectionBody(section: Section, heading: string) {
     (!stack || outcomes.length > 1 || c.breakdown[stack.verdict] === 0) &&
       join(outcomes),
     notes.length > 0 && "Capture limits · " + join(notes),
-    stack?.advisoryLookupError &&
+    stack &&
+      "cve" in stack &&
+      stack.advisoryLookupError &&
       "Advisory lookup failed · " + prose(stack.advisoryLookupError),
     stack &&
       "A sampled stack shows which functions ran. It does not measure call counts or establish who controlled the input.",

@@ -62,7 +62,9 @@ test("interactive attempts pin a revision before advisory metadata is known, the
   try {
     const started = await initializeLive(store, repo);
     expect(started.target.sha).toBe(git(repo, "rev-parse", "HEAD"));
-    expect(liveMetadataGaps(store)).toHaveLength(4);
+    expect(liveMetadataGaps(store)).toContainEqual(
+      expect.stringContaining("--vuln-description"),
+    );
     expect(() => livePacket(store)).toThrow("metadata is incomplete");
     const updated = await initializeLive(store, repo, {
       repository: "example/decoder",
